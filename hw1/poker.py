@@ -27,6 +27,8 @@
 # Можно свободно определять свои функции и т.п.
 # -----------------
 
+import itertools
+
 
 def hand_rank(hand):
     """Возвращает значение определяющее ранг 'руки'"""
@@ -54,40 +56,106 @@ def hand_rank(hand):
 def card_ranks(hand):
     """Возвращает список рангов (его числовой эквивалент),
     отсортированный от большего к меньшему"""
-    return
+    def card_to_rank(card):
+        rank = card[0]
+        value = {'T': 10, 'J': 11, 'Q': 12, 'K': 13}.get(rank)
+        return value if value else int(rank)
+    ranks = [card_to_rank(card) for card in hand]
+    return sorted(ranks, reverse=True)
 
 
 def flush(hand):
     """Возвращает True, если все карты одной масти"""
-    return
+    suits = (card[1] for card in hand)
+    return len(set(suits)) == 1
 
 
 def straight(ranks):
     """Возвращает True, если отсортированные ранги формируют последовательность 5ти,
     где у 5ти карт ранги идут по порядку (стрит)"""
-    return
+    prev_rank = ranks[0]
+    for rank in ranks[1:]:
+        if rank != prev_rank - 1:
+            return False
+        prev_rank = rank
+    return True
 
 
 def kind(n, ranks):
     """Возвращает первый ранг, который n раз встречается в данной руке.
     Возвращает None, если ничего не найдено"""
-    return
+    rank_to_count = {r: 0 for r in ranks}
+    for rank in ranks:
+        rank_to_count[rank] += 1
+    for rank in ranks:
+        count = rank_to_count[rank]
+        if count == n:
+            return rank
 
 
 def two_pair(ranks):
     """Если есть две пары, то возврщает два соответствующих ранга,
     иначе возвращает None"""
-    return
+    rank_to_count = {r: 0 for r in ranks}
+    for rank in ranks:
+        rank_to_count[rank] += 1
+    pairs = []
+    for rank in sorted(set(ranks), reverse=True):
+        count = rank_to_count[rank]
+        if count >= 2:
+            pairs.append(rank)
+    if len(pairs) == 2:
+        return pairs
 
 
 def best_hand(hand):
     """Из "руки" в 7 карт возвращает лучшую "руку" в 5 карт """
-    return
+    hands = list(itertools.combinations(hand, 5))
+    ranks = [hand_rank(hand) for hand in hands]
+    index = ranks.index(max(ranks))
+    return hands[index]
+
+
+def wild_hand_to_hands(hand):
+    black_cards = [rank + suit for rank, suit in itertools.product(map(str, range(2, 10)) + ['T', 'J', 'Q', 'K'], ['C', 'S'])]
+    red_cards = [rank + suit for rank, suit in itertools.product(map(str, range(2, 10)) + ['T', 'J', 'Q', 'K'], ['H', 'D'])]
+    hands = []
+    black_count = 0
+    red_count = 0
+    cards_wo_jokers = []
+    for card in hand:
+        if card == '?B':
+            black_count += 1
+        elif card == '?R':
+            red_count += 1
+        else:
+            cards_wo_jokers.append(card)
+    combinations = itertools.product(*([black_cards] * black_count + [red_cards] * red_count))
+    for cards in combinations:
+        hand = cards_wo_jokers + list(cards)
+        hands.append(hand)
+    return hands
+
+
+def best_hand_and_rank(hand):
+    """Из "руки" в 7 карт возвращает лучшую "руку" в 5 карт """
+    hands = list(itertools.combinations(hand, 5))
+    ranks = [hand_rank(hand) for hand in hands]
+    index = ranks.index(max(ranks))
+    return hands[index], max(ranks)
 
 
 def best_wild_hand(hand):
     """best_hand но с джокерами"""
-    return
+    hands = wild_hand_to_hands(hand)
+    best_hands = []
+    ranks = []
+    for hand in hands:
+        best_hand_, rank = best_hand_and_rank(hand)
+        best_hands.append(best_hand_)
+        ranks.append(ranks)
+    index = ranks.index(max(ranks))
+    return best_hands[index]
 
 
 def test_best_hand():
@@ -113,4 +181,5 @@ def test_best_wild_hand():
 
 if __name__ == '__main__':
     test_best_hand()
-    test_best_wild_hand()
+    best_wild_hand("6C 7C 8C ?R TC 5C ?B".split())
+    # test_best_wild_hand()

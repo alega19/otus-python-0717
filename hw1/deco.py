@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from functools import update_wrapper
+from functools import wraps, WRAPPER_ASSIGNMENTS
 
 
-def disable():
+def disable(func):
     '''
     Disable a decorator by re-assigning the decorator's name
     to this function. For example, to turn off memoization:
@@ -12,39 +12,88 @@ def disable():
     >>> memo = disable
 
     '''
-    return
+    return func
 
 
-def decorator():
+def decorator(func):
     '''
     Decorate a decorator so that it inherits the docstrings
     and stuff from the function it's decorating.
     '''
-    return
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return wrapper
 
 
-def countcalls():
+def countcalls(func):
     '''Decorator that counts calls made to the function decorated.'''
-    return
+
+    class Counter:
+
+        def __init__(self, v=0):
+            self.v = v
+
+        def __str__(self):
+            return str(self.v)
+
+    attrs = tuple(func.func_dict.keys())
+
+    @wraps(func, WRAPPER_ASSIGNMENTS + attrs)
+    def wrapper(*args, **kwargs):
+        wrapper.calls.v += 1
+        return func(*args, **kwargs)
+
+    wrapper.calls = Counter()
+
+    return wrapper
 
 
-def memo():
+def memo(func):
     '''
     Memoize a function so that it caches all return values for
     faster future lookups.
     '''
-    return
+
+    attrs = tuple(func.func_dict.keys())
+
+    @wraps(func, WRAPPER_ASSIGNMENTS + attrs)
+    def wrapper(*args, **kwargs):
+        key = args
+        if key in wrapper._cache:
+            return wrapper._cache[key]
+        result = func(*args, **kwargs)
+        wrapper._cache[key] = result
+        return result
+
+    wrapper._cache = {}
+
+    return wrapper
 
 
-def n_ary():
+def n_ary(func):
     '''
     Given binary function f(x, y), return an n_ary function such
     that f(x, y, z) = f(x, f(y,z)), etc. Also allow f(x) = x.
     '''
-    return
+
+    attrs = tuple(func.func_dict.keys())
+
+    @wraps(func, WRAPPER_ASSIGNMENTS + attrs)
+    def wrapper(*args, **kwargs):
+        if len(args) == 1:
+            return args[0]
+        elif len(args) == 2:
+            return func(args[0], args[1], **kwargs)
+        else:
+            args = args[:-2] + (func(*args[-2:]),)
+            return wrapper(*args, **kwargs)
+
+    return wrapper
 
 
-def trace():
+def trace(line):
     '''Trace calls made to function decorated.
 
     @trace("____")
@@ -64,7 +113,26 @@ def trace():
      <-- fib(3) == 3
 
     '''
-    return
+
+    def dec(func):
+
+        attrs = tuple(func.func_dict.keys())
+
+        @wraps(func, WRAPPER_ASSIGNMENTS + attrs)
+        def wrapper(*args, **kwargs):
+            args_str = '('+str(args[0])+')' if len(args) == 1 else str(args)
+            print line * wrapper._depth, '-->', func.__name__ + args_str
+            wrapper._depth += 1
+            result = func(*args, **kwargs)
+            wrapper._depth -= 1
+            print line * wrapper._depth, '<--', func.__name__ + args_str, '==', result
+            return result
+
+        wrapper._depth = 0
+
+        return wrapper
+
+    return dec
 
 
 @memo
