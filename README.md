@@ -2,7 +2,7 @@
 Code samples, homework, etc.
 
 ### Author
-Олег Гуцалов
+РћР»РµРі Р“СѓС†Р°Р»РѕРІ
 
 slack: Oleg Gutsalov (alega19)
 
