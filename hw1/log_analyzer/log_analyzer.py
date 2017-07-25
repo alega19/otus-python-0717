@@ -29,41 +29,42 @@ class LogFile:
     def __init__(self, fpath):
         self._fpath = fpath
 
-    def report_name(self):
-        fname = os.path.basename(self._fpath)
-        date_str = fname[20:28]
-        res = 'report-{0}.{1}.{2}.html'.format(date_str[:4], date_str[4:6], date_str[6:])
-        return res
+    def filename(self):
+        return os.path.basename(self._fpath)
 
-    def read(self):
+    def read_lines(self):
         if self._fpath[-2:] == 'gz':
             temp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'TEMP')
-            tmp_f = open(temp_path, 'wb')
             try:
-                with gzip.open(self._fpath, 'rb') as log_f:
-                    shutil.copyfileobj(log_f, tmp_f)
-                tmp_f.close()
-                for line in open(temp_path):
-                    yield line
+                with gzip.open(self._fpath, 'rb') as gz_f, open(temp_path, 'wb') as tmp_f:
+                    shutil.copyfileobj(gz_f, tmp_f)
+                with open(temp_path) as tmp_f:
+                    for line in tmp_f:
+                        yield line
             finally:
-                if not tmp_f.closed:
-                    tmp_f.close()
                 os.remove(temp_path)
         else:
-            for line in open(self._fpath):
-                yield line
+            with open(self._fpath) as log_f:
+                for line in log_f:
+                    yield line
 
-    @staticmethod
-    def last_logfile(log_dir):
+    @classmethod
+    def last_logfile(cls, log_dir):
         fnames = os.listdir(log_dir)
         regex = re.compile(r'nginx-access-ui\.log-\d{8}')
         log_names = [fn for fn in fnames if regex.match(fn[:28])]
         if log_names:
             log_name = sorted(log_names)[-1]
             log_path = os.path.join(log_dir, log_name)
-            return LogFile(log_path)
+            return cls(log_path)
         else:
             return None
+
+
+def get_report_name(log_fname):
+    date_str = log_fname[20:28]
+    res = 'report-{0}.{1}.{2}.html'.format(date_str[:4], date_str[4:6], date_str[6:])
+    return res
 
 
 def parse(lines):
@@ -88,18 +89,18 @@ def get_stats(records):
     return stats
 
 
+def median(values):
+    values = sorted(values)
+    if len(values) % 2 == 1:
+        index = len(values) // 2
+        return values[index]
+    else:
+        index0 = len(values) // 2
+        index1 = index0 - 1
+        return (values[index0] + values[index1]) / 2.0
+
+
 def get_rows(stats, max_size):
-
-    def med(values):
-        values = sorted(values)
-        if len(values) % 2 == 1:
-            index = len(values) // 2
-            return values[index]
-        else:
-            index0 = len(values) // 2
-            index1 = index0 - 1
-            return (values[index0] + values[index1]) / 2.0
-
     rows = []
     time_total = 0
     requests_total = 0
@@ -113,7 +114,7 @@ def get_rows(stats, max_size):
             "time_avg": time_sum / requests_count,
             "time_max": max(req_time_history),
             "time_sum": time_sum,
-            "time_med": med(req_time_history),
+            "time_med": median(req_time_history),
             "time_perc": None,
             "count_perc": None}
         rows.append(row)
@@ -127,11 +128,11 @@ def get_rows(stats, max_size):
 
 
 def save_report(rows, file_path):
-    with open(file_path, 'w') as f:
+    with open('./report.html') as template_f, open(file_path, 'w') as report_f:
         table_as_string = json.dumps(rows)
-        template = open('./report.html').read()
+        template = template_f.read()
         s = template.replace('$table_json', table_as_string)
-        f.write(s)
+        report_f.write(s)
 
 
 def main(conf):
@@ -140,9 +141,10 @@ def main(conf):
     logfile = LogFile.last_logfile(conf['LOG_DIR'])
     if logfile is None:
         return
-    report_path = os.path.join(conf['REPORT_DIR'], logfile.report_name())
+    report_name = get_report_name(logfile.filename())
+    report_path = os.path.join(conf['REPORT_DIR'], report_name)
     if not os.path.exists(report_path):
-        lines = logfile.read()
+        lines = logfile.read_lines()
         records = parse(lines)
         stats_by_url = get_stats(records)
         rows = get_rows(stats_by_url, conf['REPORT_SIZE'])
