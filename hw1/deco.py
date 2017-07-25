@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from functools import wraps, WRAPPER_ASSIGNMENTS
+from functools import wraps, update_wrapper
 
 
 def disable(func):
@@ -30,22 +30,10 @@ def decorator(func):
 def countcalls(func):
     '''Decorator that counts calls made to the function decorated.'''
 
-    class Counter:
-
-        def __init__(self, v=0):
-            self.v = v
-
-        def __str__(self):
-            return str(self.v)
-
-    attrs = tuple(func.func_dict.keys())
-
-    @wraps(func, WRAPPER_ASSIGNMENTS + attrs)
+    @wraps(func)
     def wrapper(*args, **kwargs):
-        wrapper.calls.v += 1
+        wrapper.calls = getattr(wrapper, 'calls', 0) + 1
         return func(*args, **kwargs)
-
-    wrapper.calls = Counter()
 
     return wrapper
 
@@ -56,10 +44,9 @@ def memo(func):
     faster future lookups.
     '''
 
-    attrs = tuple(func.func_dict.keys())
-
-    @wraps(func, WRAPPER_ASSIGNMENTS + attrs)
+    @wraps(func)
     def wrapper(*args, **kwargs):
+        update_wrapper(wrapper, func)
         key = args
         if key in wrapper._cache:
             return wrapper._cache[key]
@@ -78,9 +65,7 @@ def n_ary(func):
     that f(x, y, z) = f(x, f(y,z)), etc. Also allow f(x) = x.
     '''
 
-    attrs = tuple(func.func_dict.keys())
-
-    @wraps(func, WRAPPER_ASSIGNMENTS + attrs)
+    @wraps(func)
     def wrapper(*args, **kwargs):
         if len(args) == 1:
             return args[0]
@@ -116,10 +101,9 @@ def trace(line):
 
     def dec(func):
 
-        attrs = tuple(func.func_dict.keys())
-
-        @wraps(func, WRAPPER_ASSIGNMENTS + attrs)
+        @wraps(func)
         def wrapper(*args, **kwargs):
+            update_wrapper(wrapper, func)
             args_str = '('+str(args[0])+')' if len(args) == 1 else str(args)
             print line * wrapper._depth, '-->', func.__name__ + args_str
             wrapper._depth += 1
@@ -149,9 +133,9 @@ def bar(a, b):
     return a * b
 
 
-@countcalls
 @trace("####")
 @memo
+@countcalls
 def fib(n):
     return 1 if n <= 1 else fib(n-1) + fib(n-2)
 
@@ -168,7 +152,7 @@ def main():
     print "bar was called", bar.calls, "times"
 
     print fib.__doc__
-    fib(3)
+    fib(13)
     print fib.calls, 'calls made'
 
 
