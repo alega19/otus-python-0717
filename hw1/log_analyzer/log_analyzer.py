@@ -34,19 +34,12 @@ class LogFile:
 
     def read_lines(self):
         if self._fpath[-2:] == 'gz':
-            temp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'TEMP')
-            try:
-                with gzip.open(self._fpath, 'rb') as gz_f, open(temp_path, 'wb') as tmp_f:
-                    shutil.copyfileobj(gz_f, tmp_f)
-                with open(temp_path) as tmp_f:
-                    for line in tmp_f:
-                        yield line
-            finally:
-                os.remove(temp_path)
+            log_f = gzip.open(self._fpath)
         else:
-            with open(self._fpath) as log_f:
-                for line in log_f:
-                    yield line
+            log_f = open(self._fpath)
+        with log_f:
+            for line in log_f:
+                yield line
 
     @classmethod
     def last_logfile(cls, log_dir):
