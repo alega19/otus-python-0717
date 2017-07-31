@@ -223,32 +223,37 @@ class Request(object):
     def __init__(self, params):
         self._params = params
         self._errors = []
+        self._validated = False
         self._init_fields()
 
     def _init_fields(self):
         for field_name, field in self.fields.items():
-            try:
-                if field_name in self._params:
-                    self._set_field(field_name, field)
-                else:
-                    if field.required:
-                        raise ValueError
-            except ValueError:
-                self._errors.append('Field <{0}> is not valid or not found'.format(field_name))
+            if field_name in self._params:
+                setattr(self, field_name, self._params[field_name])
 
-    def _set_field(self, name, field):
-        value = self._params[name]
-        if not self._value_is_empty(value):
-            value = field.clean(value)
-        elif not field.nullable:
-            raise ValueError
-        setattr(self, name, value)
+    def validate(self):
+        for name, field in self.fields.items():
+            try:
+                value = self.__dict__[name]
+                if not self._value_is_empty(value):
+                    value = field.clean(value)
+                elif not field.nullable:
+                    raise ValueError
+                self.__dict__[name] = value
+            except KeyError:
+                if field.required:
+                    self._errors.append('Field <{0}> is not found'.format(name))
+            except ValueError:
+                self._errors.append('Field <{0}> is not valid'.format(name))
+        self._validated = True
 
     @staticmethod
     def _value_is_empty(value):
         return not value and value != 0
 
     def is_valid(self):
+        if not self._validated:
+            self.validate()
         return not self._errors
 
     def errmsg(self):
@@ -259,12 +264,6 @@ class ClientsInterestsRequest(Request):
     client_ids = ClientIDsField(required=True, nullable=False)
     date = DateField(required=False, nullable=True)
 
-    def __init__(self, params):
-        super(ClientsInterestsRequest, self).__init__(params)
-
-    def get_client_ids(self):
-        return self._params['client_ids']
-
 
 class OnlineScoreRequest(Request):
     first_name = CharField(required=False, nullable=True)
@@ -274,11 +273,8 @@ class OnlineScoreRequest(Request):
     birthday = BirthDayField(required=False, nullable=True)
     gender = GenderField(required=False, nullable=True)
 
-    def __init__(self, params):
-        super(OnlineScoreRequest, self).__init__(params)
-        self._check_params()
-
-    def _check_params(self):
+    def validate(self):
+        super(OnlineScoreRequest, self).validate()
         nonempty_fields_ = set(self.nonempty_fields())
         if not ('phone' in nonempty_fields_ and 'email' in nonempty_fields_) and\
            not ('first_name' in nonempty_fields_ and 'last_name' in nonempty_fields_) and\
@@ -286,7 +282,7 @@ class OnlineScoreRequest(Request):
             self._errors.append('Need either phone/email or first_name/last_name or birthday/gender')
 
     def nonempty_fields(self):
-        return [fn for fn in self._params if not self._value_is_empty(self._params[fn])]
+        return [fn for fn in self._params if not self._value_is_empty(self.__dict__.get(fn))]
 
 
 class MethodRequest(Request):
@@ -296,9 +292,6 @@ class MethodRequest(Request):
     arguments = ArgumentsField(required=True, nullable=True)
     method = CharField(required=True, nullable=False)
 
-    def __init__(self, params):
-        super(MethodRequest, self).__init__(params)
-
     @property
     def is_admin(self):
         return self.login == ADMIN_LOGIN
@@ -307,35 +300,24 @@ class MethodRequest(Request):
 class RequestHandler(object):
 
     def handle(self, method_req, req, ctx):
-        code, response = None, None
-        if not req.is_valid():
-            code = INVALID_REQUEST
-            response = req.errmsg()
-        return code, response
+        raise NotImplementedError
 
 
 class OnlineScoreHandler(RequestHandler):
 
     def handle(self, method_req, req, ctx):
-        code, response = super(OnlineScoreHandler, self).handle(method_req, req, ctx)
-        if code is None:
-            score = 42 if method_req.is_admin else 19
-            response = {'score': score}
-            code = OK
-            ctx['has'] = req.nonempty_fields()
-        return code, response
+        score = 42 if method_req.is_admin else 19
+        response = {'score': score}
+        ctx['has'] = req.nonempty_fields()
+        return OK, response
 
 
 class ClientsInterestsHandler(RequestHandler):
 
     def handle(self, method_req, req, ctx):
-        code, response = super(ClientsInterestsHandler, self).handle(method_req, req, ctx)
-        if code is None:
-            client_ids = req.get_client_ids()
-            response = {cid: ['books', 'music'] for cid in client_ids}
-            code = OK
-            ctx['nclients'] = len(client_ids)
-        return code, response
+        response = {cid: ['books', 'music'] for cid in req.client_ids}
+        ctx['nclients'] = len(req.client_ids)
+        return OK, response
 
 
 def check_auth(request):
@@ -361,9 +343,14 @@ def method_handler(request, ctx):
     elif not check_auth(method_request):
         code = FORBIDDEN
     else:
-        req, handler = method_to_request_handler.get(method_request.method, (None, None))
-        if req:
-            code, response = handler().handle(method_request, req(method_request.arguments), ctx)
+        req_cls, handler = method_to_request_handler.get(method_request.method, (None, None))
+        if req_cls:
+            req = req_cls(method_request.arguments)
+            if req.is_valid():
+                code, response = handler().handle(method_request, req, ctx)
+            else:
+                code = INVALID_REQUEST
+                response = req.errmsg()
         else:
             code = NOT_FOUND
     return response, code
