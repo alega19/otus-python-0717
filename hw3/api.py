@@ -124,127 +124,146 @@ class Field(object):
         self.required = required
         self.nullable = nullable
 
-    def is_valid(self, value):
-        if value or isinstance(value, (int, long)):
-            return self._is_valid(value)
-        else:
-            return self.nullable
+    def clean(self, value):
+        raise NotImplementedError
 
 
 class CharField(Field):
 
-    @staticmethod
-    def _is_valid(value):
-        return isinstance(value, str)
+    def clean(self, value):
+        if not isinstance(value, str):
+            raise ValueError
+        return value
 
 
 class ArgumentsField(Field):
 
-    @staticmethod
-    def _is_valid(value):
-        return True
+    def clean(self, value):
+        if not isinstance(value, dict):
+            raise ValueError
+        return value
 
 
 class EmailField(CharField):
 
-    @staticmethod
-    def _is_valid(value):
-        return '@' in value
+    def clean(self, value):
+        value = super(EmailField, self).clean(value)
+        if '@' not in value:
+            raise ValueError
+        return value
 
 
 class PhoneField(Field):
 
-    @staticmethod
-    def _is_valid(value):
+    def clean(self, value):
         if isinstance(value, (int, long)):
-            s = str(value)
-        elif isinstance(value, str):
-            s = value
-            try:
-                int(value)
-            except ValueError:
-                return False
+            value = str(value)
+        elif type(value) is str:
+            value = value.strip()
+            int(value)
         else:
-            return False
-        return len(s)==11 and s[0]=='7'
+            raise ValueError
+        if len(value) != 11 or value[0] != '7':
+            raise ValueError
+        return value
 
 
 class DateField(Field):
 
-    @staticmethod
-    def _is_valid(value):
+    def clean(self, value):
         try:
-            datetime.datetime.strptime(value, '%d.%m.%Y')
-            return True
-        except ValueError:
-            return False
+            return datetime.datetime.strptime(value, '%d.%m.%Y')
+        except TypeError:
+            raise ValueError
 
 
-class BirthDayField(Field):
+class BirthDayField(DateField):
 
-    @staticmethod
-    def _is_valid(value):
-        try:
-            bday = datetime.datetime.strptime(value, '%d.%m.%Y')
-            _70years = datetime.timedelta(days=70*365.25)
-            return (datetime.datetime.now() - bday) < _70years
-        except ValueError:
-            return False
+    def clean(self, value):
+        value = super(BirthDayField, self).clean(value)
+        _70years = datetime.timedelta(days=70*365.25)
+        if (datetime.datetime.now() - value) > _70years:
+            raise ValueError
+        return value
 
 
 class GenderField(Field):
 
-    @staticmethod
-    def _is_valid(value):
-        return value in GENDERS
+    def clean(self, value):
+        if value not in GENDERS:
+            raise ValueError
+        return value
 
 
 class ClientIDsField(Field):
 
-    @staticmethod
-    def _is_valid(value):
-        return isinstance(value, list) and all(isinstance(e, (int, long)) for e in value)
+    def clean(self, value):
+        if not isinstance(value, list) or any(not isinstance(e, (int, long)) for e in value):
+            raise ValueError
+        return value
 
 
-class MyMetaClass(type):  # не придумал название
+class RequestMeta(type):
 
     def __new__(cls, name, bases, attrs):
         fields = {fn: attrs[fn] for fn in attrs if isinstance(attrs[fn], Field)}
         attrs['fields'] = fields
-        return super(MyMetaClass, cls).__new__(cls, name, bases, attrs)
+        fields = {}
+        for attr_name, value in attrs.items():
+            if isinstance(value, Field):
+                fields[attr_name] = value
+        cls.fields = fields
+        return super(RequestMeta, cls).__new__(cls, name, bases, attrs)
 
 
 class Request(object):
 
-    __metaclass__ = MyMetaClass
+    __metaclass__ = RequestMeta
 
-    def __init__(self, data):
-        self.init_fields = data
-        self._invalid_fields = None
+    def __init__(self, params):
+        self._params = params
+        self._errors = []
+        self._init_fields()
+
+    def _init_fields(self):
+        for field_name, field in self.fields.items():
+            try:
+                if field_name in self._params:
+                    self._set_field(field_name, field)
+                else:
+                    if field.required:
+                        raise ValueError
+            except ValueError:
+                self._errors.append('Field <{0}> is not valid or not found'.format(field_name))
+
+    def _set_field(self, name, field):
+        value = self._params[name]
+        if not self._value_is_empty(value):
+            value = field.clean(value)
+        elif not field.nullable:
+            raise ValueError
+        setattr(self, name, value)
+
+    @staticmethod
+    def _value_is_empty(value):
+        return not value and value != 0
 
     def is_valid(self):
-        self._invalid_fields = []
-        for field_name in self.fields:
-            field = self.fields[field_name]
-            if field_name in self.init_fields:
-                value = self.init_fields[field_name]
-                if not field.is_valid(value):
-                    self._invalid_fields.append(field_name)
-            else:
-                if field.required:
-                    self._invalid_fields.append(field_name)
-        return not self._invalid_fields
+        return not self._errors
 
-    def invalid_fields(self):
-        return self._invalid_fields
+    def errmsg(self):
+        return ', '.join(self._errors)
 
 
 class ClientsInterestsRequest(Request):
     client_ids = ClientIDsField(required=True, nullable=False)
     date = DateField(required=False, nullable=True)
 
+    def __init__(self, params):
+        super(ClientsInterestsRequest, self).__init__(params)
+
     def get_client_ids(self):
-        return self.init_fields['client_ids']
+        return self._params['client_ids']
 
 
 class OnlineScoreRequest(Request):
@@ -255,21 +274,19 @@ class OnlineScoreRequest(Request):
     birthday = BirthDayField(required=False, nullable=True)
     gender = GenderField(required=False, nullable=True)
 
-    def is_valid(self):
-        if not super(OnlineScoreRequest, self).is_valid():
-            return False
+    def __init__(self, params):
+        super(OnlineScoreRequest, self).__init__(params)
+        self._check_params()
+
+    def _check_params(self):
         nonempty_fields_ = set(self.nonempty_fields())
-        if 'phone' in nonempty_fields_ and 'email' in nonempty_fields_:
-            return True
-        elif 'first_name' in nonempty_fields_ and 'last_name' in nonempty_fields_:
-            return True
-        elif 'birthday' in nonempty_fields_ and 'gender' in nonempty_fields_:
-            return True
-        else:
-            return False
+        if not ('phone' in nonempty_fields_ and 'email' in nonempty_fields_) and\
+           not ('first_name' in nonempty_fields_ and 'last_name' in nonempty_fields_) and\
+           not ('birthday' in nonempty_fields_ and 'gender' in nonempty_fields_):
+            self._errors.append('Need either phone/email or first_name/last_name or birthday/gender')
 
     def nonempty_fields(self):
-        return [fn for fn in self.init_fields if self.init_fields[fn] or isinstance(self.init_fields[fn], (int, long))]
+        return [fn for fn in self._params if not self._value_is_empty(self._params[fn])]
 
 
 class MethodRequest(Request):
@@ -279,17 +296,46 @@ class MethodRequest(Request):
     arguments = ArgumentsField(required=True, nullable=True)
     method = CharField(required=True, nullable=False)
 
-    def __init__(self, data):
-        super(MethodRequest, self).__init__(data)
-        self.account = data.get('account')
-        self.login = data.get('login')
-        self.token = data.get('token')
-        self.arguments = data.get('arguments')
-        self.method = data.get('method')
+    def __init__(self, params):
+        super(MethodRequest, self).__init__(params)
 
     @property
     def is_admin(self):
         return self.login == ADMIN_LOGIN
+
+
+class RequestHandler(object):
+
+    def handle(self, method_req, req, ctx):
+        code, response = None, None
+        if not req.is_valid():
+            code = INVALID_REQUEST
+            response = req.errmsg()
+        return code, response
+
+
+class OnlineScoreHandler(RequestHandler):
+
+    def handle(self, method_req, req, ctx):
+        code, response = super(OnlineScoreHandler, self).handle(method_req, req, ctx)
+        if code is None:
+            score = 42 if method_req.is_admin else 19
+            response = {'score': score}
+            code = OK
+            ctx['has'] = req.nonempty_fields()
+        return code, response
+
+
+class ClientsInterestsHandler(RequestHandler):
+
+    def handle(self, method_req, req, ctx):
+        code, response = super(ClientsInterestsHandler, self).handle(method_req, req, ctx)
+        if code is None:
+            client_ids = req.get_client_ids()
+            response = {cid: ['books', 'music'] for cid in client_ids}
+            code = OK
+            ctx['nclients'] = len(client_ids)
+        return code, response
 
 
 def check_auth(request):
@@ -303,33 +349,21 @@ def check_auth(request):
 
 
 def method_handler(request, ctx):
+    method_to_request_handler = {
+        'online_score': (OnlineScoreRequest, OnlineScoreHandler),
+        'clients_interests': (ClientsInterestsRequest, ClientsInterestsHandler)
+    }
     response, code = None, None
     method_request = MethodRequest(request['body'])
     if not method_request.is_valid():
         code = INVALID_REQUEST
-        response = 'Invalid fields %s' % method_request.invalid_fields()
+        response = method_request.errmsg()
     elif not check_auth(method_request):
         code = FORBIDDEN
     else:
-        if method_request.method == 'online_score':
-            os_request = OnlineScoreRequest(method_request.arguments)
-            if os_request.is_valid():
-                code = OK
-                score = 42 if method_request.is_admin else 19
-                response = {'score': score}
-                ctx['has'] = os_request.nonempty_fields()
-            else:
-                code = INVALID_REQUEST
-                response = 'Invalid fields %s' % os_request.invalid_fields()
-        elif method_request.method == 'clients_interests':
-            ci_request = ClientsInterestsRequest(method_request.arguments)
-            if ci_request.is_valid():
-                code = OK
-                response = {cid: ['books', 'music'] for cid in ci_request.get_client_ids()}
-                ctx['nclients'] = len(ci_request.get_client_ids())
-            else:
-                code = INVALID_REQUEST
-                response = 'Invalid fields %s' % ci_request.invalid_fields()
+        req, handler = method_to_request_handler.get(method_request.method, (None, None))
+        if req:
+            code, response = handler().handle(method_request, req(method_request.arguments), ctx)
         else:
             code = NOT_FOUND
     return response, code
@@ -376,6 +410,7 @@ class MainHTTPHandler(BaseHTTPRequestHandler):
         logging.info(context)
         self.wfile.write(json.dumps(r))
         return
+
 
 if __name__ == "__main__":
     op = OptionParser()
