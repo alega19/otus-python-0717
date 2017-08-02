@@ -140,9 +140,8 @@ def wild_hand_to_hands(hand):
 def best_hand_and_rank(hand):
     """Из "руки" в 7 карт возвращает лучшую "руку" в 5 карт """
     hands = list(itertools.combinations(hand, 5))
-    ranks = [hand_rank(hand) for hand in hands]
-    index = ranks.index(max(ranks))
-    return hands[index], max(ranks)
+    hand = max(hands, key=hand_rank)
+    return hand, hand_rank(hand)
 
 
 def best_wild_hand(hand):
