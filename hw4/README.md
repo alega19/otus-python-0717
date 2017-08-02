@@ -1,6 +1,6 @@
-##HW4: Asynchronous http server (epoll)
+## HW4: Asynchronous http server (epoll)
 
-##Benchmarking:
+## Benchmarking:
 
 Server Software:        My
 
