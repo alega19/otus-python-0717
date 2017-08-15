@@ -53,12 +53,7 @@ systemctl daemon-reload
 
 
 %files
-%{__bindir}/wsgi.py
-%{__systemddir}/%{name}.service
-%{__etcdir}/uwsgi.ini
-%{__etcdir}/secret.json
-
-%exclude
-%{__bindir}/*.pyc
-%{__bindir}/*.pyo
+%{__bindir}
+%{__systemddir}
+%{__etcdir}
 
