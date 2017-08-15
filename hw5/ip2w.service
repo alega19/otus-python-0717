@@ -1,0 +1,10 @@
+[Unit]
+Description=uWSGI app "IP to weather"
+
+[Service]
+ExecStart=/usr/bin/uwsgi --ini /usr/local/etc/ip2w/uwsgi.ini
+
+
+[Install]
+WantedBy=multi-user.target
+
