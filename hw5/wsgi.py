@@ -76,6 +76,6 @@ def application(environ, start_response):
         body = json.dumps({'error': str(err)})
 
     start_response(status, [('Content-Type', 'application/json'),
-                            ('Content-Length', str(body))])
+                            ('Content-Length', str(len(body)))])
     return [body]
 
