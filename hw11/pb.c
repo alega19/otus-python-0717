@@ -11,15 +11,15 @@
 #define DEVICE_APPS_TYPE 1
 
 
-typedef struct pbheader_s {
+typedef struct {
     uint32_t magic;
     uint16_t type;
     uint16_t length;
-} pbheader_t;
-#define PBHEADER_INIT {MAGIC, DEVICE_APPS_TYPE, 0}
+} __attribute__((packed)) pbheader_t;
+#define PBHEADER_INIT {htole32(MAGIC), htole16(DEVICE_APPS_TYPE), 0}
 
 
-typedef struct _Buffer {
+typedef struct {
     void* p;
     size_t len;
 } Buffer;
@@ -91,7 +91,10 @@ size_t serialize_dict(PyObject* dict, Buffer* out, Buffer* tmp_buf){
 	}
 	msg.n_apps = PyList_Size(apps_obj);
 	if (msg.n_apps){
-            Buffer_Resize(tmp_buf, sizeof(uint32_t) * msg.n_apps);
+            if (! Buffer_Resize(tmp_buf, sizeof(uint32_t) * msg.n_apps)){
+                PyErr_SetNone(PyExc_MemoryError);
+                return 0;
+            }
 	    msg.apps = tmp_buf->p;
 	    size_t i=0;
 	    while (i<msg.n_apps){
@@ -137,14 +140,15 @@ size_t serialize_dict(PyObject* dict, Buffer* out, Buffer* tmp_buf){
     }
 
     size_t nbytes = device_apps__get_packed_size(&msg);
-    Buffer_Resize(out, 8+nbytes);
-    pbheader_t header = PBHEADER_INIT;
-    header.length = nbytes;
-    memcpy(out->p, &header.magic, 4);
-    memcpy(out->p+4, &header.type, 2);
-    memcpy(out->p+6, &header.length, 2);
-    device_apps__pack(&msg, out->p+8);
-    return 8+nbytes;
+    if (! Buffer_Resize(out, sizeof(pbheader_t) + nbytes)){
+        PyErr_SetNone(PyExc_MemoryError);
+        return 0;
+    }
+    static pbheader_t header = PBHEADER_INIT;
+    header.length = htole16(nbytes);
+    memcpy(out->p, &header, sizeof(pbheader_t));
+    device_apps__pack(&msg, out->p + sizeof(pbheader_t));
+    return sizeof(pbheader_t) + nbytes;
 }
 
 // Read iterator of Python dicts
@@ -194,6 +198,7 @@ static PyObject* py_deviceapps_xwrite_pb(PyObject* self, PyObject* args) {
     Buffer_Destroy(&serialized);
     Py_DECREF(iter);
     gzclose(fp);
+    if (PyErr_Occurred()) return 0;
 
     return PyLong_FromUnsignedLongLong(total_len);
 }
