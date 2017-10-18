@@ -13,115 +13,73 @@ from optparse import OptionParser
 import appsinstalled_pb2
 # pip install python-memcached
 import memcache
-from threading import Thread, Lock
-from heapq import heappop, heappush
+from multiprocessing import Pool
 
 
 NORMAL_ERR_RATE = 0.01
 AppsInstalled = collections.namedtuple("AppsInstalled", ["dev_type", "dev_id", "lat", "lon", "apps"])
 
 
-class FileState:
+class Worker(object):
 
-    def __init__(self, fn):
-        self.fn = fn
-        self.processed = False
-
-    def __lt__(self, other):
-        return self.fn < other.fn
-
-
-class Worker(Thread):
-
-    lock = Lock()
-    fnames_iter = None
-    device_memc = None
-    dry = None
-
-    file_states_lock = Lock()
-    file_states = []
-
-    def __init__(self):
-        super(Worker, self).__init__()
+    def __init__(self, device_memc, dry):
+        self.device_memc = device_memc
+        self.dry = dry
         self.memclients = {}
-        self.cur_fn = None
-        self.daemon = True
 
-    def next_file(self):
-        try:
-            with self.lock:
-                self.cur_fn = next(self.fnames_iter)
-        except StopIteration:
-            self.cur_fn = None
+    def __call__(self, fname):
+        processed = errors = 0
+        logging.info('Processing %s' % fname)
+        with gzip.open(fname) as fd:
+            for line in fd:
+                line = line.strip()
+                if not line:
+                    continue
+                appsinstalled = self.parse_appsinstalled(fname, line)
+                if not appsinstalled:
+                    errors += 1
+                    continue
+                memc_addr = self.device_memc.get(appsinstalled.dev_type)
+                if not memc_addr:
+                    errors += 1
+                    logging.error("Processing %s. Unknow device type: %s" % (fname, appsinstalled.dev_type))
+                    continue
+                ok = self.insert_appsinstalled(fname, memc_addr, appsinstalled)
+                if ok:
+                    processed += 1
+                else:
+                    errors += 1
 
-    def run(self):
-        while True:
-            self.next_file()
-            if self.cur_fn is None:
-                break
-            state = FileState(self.cur_fn)
-            with self.file_states_lock:
-                heappush(self.file_states, state)
+        err_rate = float(errors) / processed
+        if err_rate < NORMAL_ERR_RATE:
+            logging.info("Processing %s. Acceptable error rate (%s). Successfull load" % (fname, err_rate))
+        else:
+            logging.error("Processing %s. High error rate (%s > %s). Failed load" % (fname, err_rate, NORMAL_ERR_RATE))
+        return fname
 
-            processed = errors = 0
-            logging.info('Processing %s' % self.cur_fn)
-            with gzip.open(self.cur_fn) as fd:
-                for line in fd:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    appsinstalled = self.parse_appsinstalled(line)
-                    if not appsinstalled:
-                        errors += 1
-                        continue
-                    memc_addr = self.device_memc.get(appsinstalled.dev_type)
-                    if not memc_addr:
-                        errors += 1
-                        logging.error("Processing %s. Unknow device type: %s" % (self.cur_fn, appsinstalled.dev_type))
-                        continue
-                    ok = self.insert_appsinstalled(memc_addr, appsinstalled)
-                    if ok:
-                        processed += 1
-                    else:
-                        errors += 1
-            with self.file_states_lock:
-                state.processed = True
-            self.dot_rename()
-
-            err_rate = float(errors) / processed
-            if err_rate < NORMAL_ERR_RATE:
-                logging.info("Processing %s. Acceptable error rate (%s). Successfull load" % (self.cur_fn, err_rate))
-            else:
-                logging.error("Processing %s. High error rate (%s > %s). Failed load" % (fn, err_rate, NORMAL_ERR_RATE))
-
-    def insert_appsinstalled(self, memc_addr, appsinstalled):
+    def insert_appsinstalled(self, fname, memc_addr, appsinstalled):
         ua = appsinstalled_pb2.UserApps()
         ua.lat = appsinstalled.lat
         ua.lon = appsinstalled.lon
         key = "%s:%s" % (appsinstalled.dev_type, appsinstalled.dev_id)
         ua.apps.extend(appsinstalled.apps)
         packed = ua.SerializeToString()
-        try:
-            if self.dry:
-                logging.debug("Processing %s. %s - %s -> %s" % (self.cur_fn, memc_addr, key, str(ua).replace("\n", " ")))
-            else:
-                memc = self.memclients.get(memc_addr)
-                if memc is None:
-                    memc = memcache.Client([memc_addr])
-                    self.memclients[memc_addr] = memc
+        if self.dry:
+            logging.debug("Processing %s. %s - %s -> %s" % (fname, memc_addr, key, str(ua).replace("\n", " ")))
+            return True
+        else:
+            memc = self.memclients.get(memc_addr)
+            if memc is None:
+                memc = memcache.Client([memc_addr])
+                self.memclients[memc_addr] = memc
+            ok = memc.set(key, packed)
+            for _ in xrange(3):
+                if ok:
+                    break
                 ok = memc.set(key, packed)
-                for _ in xrange(3):
-                    if ok:
-                        break
-                    ok = memc.set(key, packed)
-                if not ok:
-                    raise RuntimeError()
-        except Exception, e:
-            logging.exception("Processing %s. Cannot write to memc %s: %s" % (self.cur_fn, memc_addr, e))
-            return False
-        return True
+            return ok
 
-    def parse_appsinstalled(self, line):
+    def parse_appsinstalled(self, fname, line):
         line_parts = line.strip().split("\t")
         if len(line_parts) < 5:
             return
@@ -132,41 +90,26 @@ class Worker(Thread):
             apps = [int(a.strip()) for a in raw_apps.split(",")]
         except ValueError:
             apps = [int(a.strip()) for a in raw_apps.split(",") if a.isidigit()]
-            logging.info("Processing %s. Not all user apps are digits: `%s`" % (self.cur_fn, line))
+            logging.info("Processing %s. Not all user apps are digits: `%s`" % (fname, line))
         try:
             lat, lon = float(lat), float(lon)
         except ValueError:
-            logging.info("Processing %s. Invalid geo coords: `%s`" % (self.cur_fn, line))
+            logging.info("Processing %s. Invalid geo coords: `%s`" % (fname, line))
         return AppsInstalled(dev_type, dev_id, lat, lon, apps)
-
-    def dot_rename(self):
-        with self.file_states_lock:
-            while self.file_states:
-                state = heappop(self.file_states)
-                if state.processed:
-                    head, fn = os.path.split(state.fn)
-                    os.rename(state.fn, os.path.join(head, "." + fn))
-                else:
-                    heappush(self.file_states, state)
-                    break
 
 
 def main(options):
-    Worker.device_memc = {
+    device_memc = {
         "idfa": options.idfa,
         "gaid": options.gaid,
         "adid": options.adid,
         "dvid": options.dvid,
     }
-    Worker.fnames_iter = glob.iglob(options.pattern)
-    Worker.dry = options.dry
-    workers = []
-    for _ in xrange(options.workers):
-        worker = Worker()
-        worker.start()
-        workers.append(worker)
-    for worker in workers:
-        worker.join()
+    fnames = glob.glob(options.pattern)
+    fnames = sorted(fnames)
+    for fname in Pool(options.workers).imap(Worker(device_memc, options.dry), fnames):
+        head, fn = os.path.split(fname)
+        os.rename(fname, os.path.join(head, "." + fn))
 
 
 def prototest():
@@ -209,3 +152,4 @@ if __name__ == '__main__':
     except Exception, e:
         logging.exception("Unexpected error: %s" % e)
         sys.exit(1)
+
