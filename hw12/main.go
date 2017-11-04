@@ -8,12 +8,6 @@ import (
 )
 
 
-type DeviceData struct {
-	type_ string
-	id    string
-	data  []byte
-}
-
 var logger = NewLogger()
 
 func main() {

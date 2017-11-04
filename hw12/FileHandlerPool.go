@@ -13,6 +13,14 @@ import (
 	"path/filepath"
 )
 
+
+type DeviceData struct {
+	Type string
+	Id   string
+	Data []byte
+}
+
+
 type FileHandlerPool struct {
 	filenamesCh chan string
 	wg sync.WaitGroup
@@ -73,14 +81,14 @@ func (hp *FileHandlerPool) handleFile(filename string, memcacheClients map[strin
 			logger.Println(err)
 			continue
 		}
-		mc := memcacheClients[dev.type_]
+		mc := memcacheClients[dev.Type]
 		if mc == nil {
-			logger.Println(errors.New("unknown device type: " + dev.type_))
+			logger.Println(errors.New("unknown device type: " + dev.Type))
 			continue
 		}
 		mc.Set(&memcache.Item{
-			Key: dev.type_ + ":" + dev.id,
-			Value: dev.data,
+			Key: dev.Type + ":" + dev.Id,
+			Value: dev.Data,
 		})
 	}
 	if err = scanner.Err(); err != nil {
@@ -94,8 +102,8 @@ func parseAndSerialize(s string) (dev DeviceData, err error) {
 		err = errors.New("parsing error: " + s)
 		return
 	}
-	dev.type_ = parts[0]
-	dev.id = parts[1]
+	dev.Type = parts[0]
+	dev.Id = parts[1]
 
 	lat, err := strconv.ParseFloat(parts[2], 64); if err != nil {
 		err = errors.New("parsing error: " + s)
@@ -119,7 +127,7 @@ func parseAndSerialize(s string) (dev DeviceData, err error) {
 		Lon: &lon,
 		Apps: apps,
 	}
-	dev.data, err = proto.Marshal(ua); if err != nil {
+	dev.Data, err = proto.Marshal(ua); if err != nil {
 		err = errors.New("marshaling error")
 		return
 	}
