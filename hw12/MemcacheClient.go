@@ -25,13 +25,14 @@ func (mc *MemcacheClient) startLoop() {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	for item := range mc.itemsCh {
-		for i := 1; i <= 3; i++ {
-			err := mc.c.Set(item)
-			if err != nil {
-				continue
-			} else {
+		var err error
+		for i := 0; i < 3; i++ {
+			err = mc.c.Set(item)
+			if err == nil {
 				break
 			}
+		}
+		if err != nil {
 			logger.Println(err)
 		}
 	}
