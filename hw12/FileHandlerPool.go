@@ -62,15 +62,11 @@ func (hp *FileHandlerPool) startHandler(memcacheClients map[string]*MemcacheClie
 	}
 }
 
-func (hp *FileHandlerPool) handleFile(filename string, memcacheClients map[string]*MemcacheClient) error {
-	file, err := os.Open(filename); if err != nil {
-		return err
-	}
+func (hp *FileHandlerPool) handleFile(filename string, memcacheClients map[string]*MemcacheClient) (err error) {
+	file, err := os.Open(filename); if err != nil {return}
 	defer file.Close()
 
-	gzReader, err := gzip.NewReader(file); if err != nil {
-		return err
-	}
+	gzReader, err := gzip.NewReader(file); if err != nil {return}
 	defer gzReader.Close()
 
 	scanner := bufio.NewScanner(gzReader)
@@ -91,10 +87,8 @@ func (hp *FileHandlerPool) handleFile(filename string, memcacheClients map[strin
 			Value: dev.Data,
 		})
 	}
-	if err = scanner.Err(); err != nil {
-		return err
-	}
-	return nil
+	err = scanner.Err()
+	return
 }
 
 func parseAndSerialize(s string) (dev DeviceData, err error) {
