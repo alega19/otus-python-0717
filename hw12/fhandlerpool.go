@@ -11,7 +11,14 @@ import (
 	"strconv"
 	"github.com/golang/protobuf/proto"
 	"path/filepath"
+	"fmt"
 )
+
+
+type Message struct {
+	item *memcache.Item
+	errCh chan bool
+}
 
 
 type DeviceData struct {
@@ -69,25 +76,56 @@ func (hp *FileHandlerPool) handleFile(filename string, memcacheClients map[strin
 	gzReader, err := gzip.NewReader(file); if err != nil {return}
 	defer gzReader.Close()
 
+	var processed, errorsNum uint64 = 0, 0
 	scanner := bufio.NewScanner(gzReader)
+	errCh := make(chan bool, 1024)
+	var counter uint64 = 0
 	for scanner.Scan() {
+		processed++
 		line := scanner.Text()
 		line = strings.TrimSpace(line)
 		dev, err := parseAndSerialize(line); if err != nil {
+			errorsNum++
 			logger.Println(err)
 			continue
 		}
 		mc := memcacheClients[dev.Type]
 		if mc == nil {
+			errorsNum++
 			logger.Println(errors.New("unknown device type: " + dev.Type))
 			continue
 		}
-		mc.Set(&memcache.Item{
-			Key: dev.Type + ":" + dev.Id,
-			Value: dev.Data,
+		mc.Set(&Message{
+			&memcache.Item{
+				Key:   dev.Type + ":" + dev.Id,
+				Value: dev.Data,
+			},
+			errCh,
 		})
+		counter++
+		if counter == uint64(cap(errCh)) {
+			errorsNum += collectErrors(errCh, counter)
+			counter = 0
+		}
+	}
+	errorsNum += collectErrors(errCh, counter)
+	errRate := float64(errorsNum) / float64(processed)
+	if errRate < NORMAL_ERR_RATE {
+		logger.Println(fmt.Sprintf("Acceptable error rate (%f). Successfull load \"%s\"", errRate, filename))
+	} else {
+		logger.Println(fmt.Sprintf("High error rate (%f > %f). Failed load \"%s\"", errRate, NORMAL_ERR_RATE, filename))
 	}
 	err = scanner.Err()
+	return
+}
+
+func collectErrors(errCh chan bool, counter uint64) (num uint64) {
+	for counter > 0 {
+		if <-errCh {
+			num++
+		}
+		counter--
+	}
 	return
 }
 

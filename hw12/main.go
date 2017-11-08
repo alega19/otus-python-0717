@@ -7,6 +7,7 @@ import (
 	"sort"
 )
 
+var NORMAL_ERR_RATE float64 = 0.01
 
 var logger = NewLogger()
 
