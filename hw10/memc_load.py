@@ -14,24 +14,63 @@ import appsinstalled_pb2
 # pip install python-memcached
 import memcache
 from multiprocessing import Pool
+from threading import Thread
+from Queue import Queue
 
 
 NORMAL_ERR_RATE = 0.01
 AppsInstalled = collections.namedtuple("AppsInstalled", ["dev_type", "dev_id", "lat", "lon", "apps"])
 
 
+class MemcacheClient(Thread):
+
+    def __init__(self, addr):
+        super(MemcacheClient, self).__init__()
+        self.daemon = True
+        self.queue = Queue(64)
+        self.addr = addr
+        self.errors = 0
+
+    def set(self, msg):
+        self.queue.put(msg)
+
+    def try_to_stop(self):
+        self.queue.put(None)
+
+    def run(self):
+        client = memcache.Client([self.addr])
+        while True:
+            msg = self.queue.get()
+            if msg is None:
+                break
+            ok = client.set(msg['key'], msg['data'])
+            for _ in xrange(3):
+                if ok:
+                    break
+                ok = client.set(msg['key'], msg['data'])
+            if not ok:
+                self.errors += 1
+
+
 class Worker(object):
 
-    def __init__(self, device_memc, dry):
-        self.device_memc = device_memc
+    def __init__(self, devtype2addr, dry):
         self.dry = dry
-        self.memclients = {}
+        self.devtype2addr = devtype2addr
 
     def __call__(self, fname):
-        processed = errors = 0
         logging.info('Processing %s' % fname)
+
+        processed = errors = 0
+        memclients = {}
+        for dt, addr in self.devtype2addr.items():
+            mc = MemcacheClient(addr)
+            mc.start()
+            memclients[dt] = mc
+
         with gzip.open(fname) as fd:
             for line in fd:
+                processed += 1
                 line = line.strip()
                 if not line:
                     continue
@@ -39,16 +78,21 @@ class Worker(object):
                 if not appsinstalled:
                     errors += 1
                     continue
-                memc_addr = self.device_memc.get(appsinstalled.dev_type)
-                if not memc_addr:
+                mc = memclients.get(appsinstalled.dev_type)
+                if not mc:
                     errors += 1
                     logging.error("Processing %s. Unknow device type: %s" % (fname, appsinstalled.dev_type))
                     continue
-                ok = self.insert_appsinstalled(fname, memc_addr, appsinstalled)
-                if ok:
-                    processed += 1
+                msg = self.serialize(appsinstalled)
+                if self.dry:
+                    logging.debug("Processing %s: %s" % (fname, str(msg)))
                 else:
-                    errors += 1
+                    mc.set(msg)
+
+        for mc in memclients.values():
+            mc.try_to_stop()
+            mc.join()
+            errors += mc.errors
 
         err_rate = float(errors) / processed
         if err_rate < NORMAL_ERR_RATE:
@@ -56,28 +100,6 @@ class Worker(object):
         else:
             logging.error("Processing %s. High error rate (%s > %s). Failed load" % (fname, err_rate, NORMAL_ERR_RATE))
         return fname
-
-    def insert_appsinstalled(self, fname, memc_addr, appsinstalled):
-        ua = appsinstalled_pb2.UserApps()
-        ua.lat = appsinstalled.lat
-        ua.lon = appsinstalled.lon
-        key = "%s:%s" % (appsinstalled.dev_type, appsinstalled.dev_id)
-        ua.apps.extend(appsinstalled.apps)
-        packed = ua.SerializeToString()
-        if self.dry:
-            logging.debug("Processing %s. %s - %s -> %s" % (fname, memc_addr, key, str(ua).replace("\n", " ")))
-            return True
-        else:
-            memc = self.memclients.get(memc_addr)
-            if memc is None:
-                memc = memcache.Client([memc_addr])
-                self.memclients[memc_addr] = memc
-            ok = memc.set(key, packed)
-            for _ in xrange(3):
-                if ok:
-                    break
-                ok = memc.set(key, packed)
-            return ok
 
     def parse_appsinstalled(self, fname, line):
         line_parts = line.strip().split("\t")
@@ -97,9 +119,18 @@ class Worker(object):
             logging.info("Processing %s. Invalid geo coords: `%s`" % (fname, line))
         return AppsInstalled(dev_type, dev_id, lat, lon, apps)
 
+    def serialize(self, appsinstalled):
+        ua = appsinstalled_pb2.UserApps()
+        ua.lat = appsinstalled.lat
+        ua.lon = appsinstalled.lon
+        key = "%s:%s" % (appsinstalled.dev_type, appsinstalled.dev_id)
+        ua.apps.extend(appsinstalled.apps)
+        packed = ua.SerializeToString()
+        return {'key': key, 'data': packed}
+
 
 def main(options):
-    device_memc = {
+    devtype2addr = {
         "idfa": options.idfa,
         "gaid": options.gaid,
         "adid": options.adid,
@@ -107,7 +138,7 @@ def main(options):
     }
     fnames = glob.glob(options.pattern)
     fnames = sorted(fnames)
-    for fname in Pool(options.workers).imap(Worker(device_memc, options.dry), fnames):
+    for fname in Pool(options.workers).imap(Worker(devtype2addr, options.dry), fnames):
         head, fn = os.path.split(fname)
         os.rename(fname, os.path.join(head, "." + fn))
 
@@ -152,4 +183,3 @@ if __name__ == '__main__':
     except Exception, e:
         logging.exception("Unexpected error: %s" % e)
         sys.exit(1)
-
